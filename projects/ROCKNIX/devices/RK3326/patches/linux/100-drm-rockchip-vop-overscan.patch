@@ -1,0 +1,74 @@
+drm/rockchip: add VOP primary-plane overscan module params
+
+Remap the primary plane destination into a centred sub-rectangle so content
+hidden by the panel bezel on RK3326 handhelds (R36T Max) stays visible. The VOP
+window scaler downscales the source into the shrunk destination. Controlled by
+overscan_{left,right,top,bottom} module params (rockchipdrm.overscan_*), default
+100 = off, runtime-settable via /sys/module/rockchipdrm/parameters/.
+
+--- a/drivers/gpu/drm/rockchip/rockchip_drm_vop.c
++++ b/drivers/gpu/drm/rockchip/rockchip_drm_vop.c
+@@ -906,6 +906,23 @@
+ 	spin_unlock(&vop->reg_lock);
+ }
+ 
++/*
++ * Overscan/underscan for the primary plane. Each value is the percentage of the
++ * screen kept on that edge (100 = no overscan, the default). Lower values inset
++ * that edge so content hidden by the panel bezel (RK3326 handhelds such as the
++ * R36T Max) stays visible. Set at boot via rockchipdrm.overscan_* or at runtime
++ * via /sys/module/rockchipdrm/parameters/overscan_* (applies on next commit).
++ */
++static int overscan_left = 100;
++static int overscan_right = 100;
++static int overscan_top = 100;
++static int overscan_bottom = 100;
++module_param(overscan_left, int, 0644);
++module_param(overscan_right, int, 0644);
++module_param(overscan_top, int, 0644);
++module_param(overscan_bottom, int, 0644);
++MODULE_PARM_DESC(overscan_left, "Primary plane left overscan %: 100=off, lower insets the edge");
++
+ static void vop_plane_atomic_update(struct drm_plane *plane,
+ 		struct drm_atomic_state *state)
+ {
+@@ -922,6 +939,7 @@
+ 	uint32_t act_info, dsp_info, dsp_st;
+ 	struct drm_rect *src = &new_state->src;
+ 	struct drm_rect *dest = &new_state->dst;
++	struct drm_rect dest_overscan;
+ 	struct drm_gem_object *obj, *uv_obj;
+ 	struct rockchip_gem_object *rk_obj, *rk_uv_obj;
+ 	unsigned long offset;
+@@ -954,6 +972,31 @@
+ 	actual_h = drm_rect_height(src) >> 16;
+ 	act_info = (actual_h - 1) << 16 | ((actual_w - 1) & 0xffff);
+ 
++	/*
++	 * Overscan: remap the primary plane destination into a centred sub-rect so
++	 * pixels hidden by the panel bezel stay visible; the VOP scaler below then
++	 * scales the source into the shrunk destination.
++	 */
++	if (plane->type == DRM_PLANE_TYPE_PRIMARY &&
++	    (overscan_left < 100 || overscan_right < 100 ||
++	     overscan_top < 100 || overscan_bottom < 100)) {
++		int mode_w = crtc->mode.hdisplay;
++		int mode_h = crtc->mode.vdisplay;
++		int il = mode_w * (100 - clamp(overscan_left, 50, 100)) / 100;
++		int ir = mode_w * (100 - clamp(overscan_right, 50, 100)) / 100;
++		int it = mode_h * (100 - clamp(overscan_top, 50, 100)) / 100;
++		int ib = mode_h * (100 - clamp(overscan_bottom, 50, 100)) / 100;
++		int nw = mode_w - il - ir;
++		int nh = mode_h - it - ib;
++
++		dest_overscan = *dest;
++		dest_overscan.x1 = il + dest->x1 * nw / mode_w;
++		dest_overscan.x2 = il + dest->x2 * nw / mode_w;
++		dest_overscan.y1 = it + dest->y1 * nh / mode_h;
++		dest_overscan.y2 = it + dest->y2 * nh / mode_h;
++		dest = &dest_overscan;
++	}
++
+ 	dsp_info = (drm_rect_height(dest) - 1) << 16;
+ 	dsp_info |= (drm_rect_width(dest) - 1) & 0xffff;
+ 
